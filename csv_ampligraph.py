@@ -24,6 +24,10 @@ import pickle
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 logging.getLogger().setLevel(logging.INFO)
+import zipfile
+
+APPROX_CLUSTERS = 300
+APPROX_OUTLIERS_PER_CLUSTER = 1
 
 parser = ArgumentParser(description='Projecting graph to 3d (and embeddings)')
 parser.add_argument('csv',
@@ -33,9 +37,9 @@ parser.add_argument('csv',
                     default="./test")
 args = parser.parse_args()
 
-# getting whole wordnet graph
+# loading model
 ke_model_path = "./knowledge_graph_model/csv_ke.amplimodel"
-ke_wnkeys_path = "./knowledge_graph_model/csv_ke.wnkeys"
+ke_keys_path = "./knowledge_graph_model/csv_ke.keys"
 
 table = pd.read_csv(args.csv, sep='|', header=0)
 whole_graph = list(zip(table['n1'], table['rel'], table['n2']))
@@ -63,7 +67,7 @@ if True: #not os.path.isfile(ke_wnkeys_path) or not os.path.isfile(ke_model_path
     tok2id = {tok:i for i, tok in enumerate(known_entities)}
 
     import pickle
-    with open(ke_wnkeys_path, 'wb') as handle:
+    with open(ke_keys_path, 'wb') as handle:
         pickle.dump((tok2id, id2tok), handle)
 
     X['train'] = np.array([list((tok2id[r[0]], r[1], tok2id[r[2]])) for r in X['train']
@@ -78,7 +82,7 @@ if True: #not os.path.isfile(ke_wnkeys_path) or not os.path.isfile(ke_model_path
     ke_kwargs = {
         "verbose":True,
         "k":70,
-        "epochs":250
+        "epochs":100
     }
 
     # ComplEx brings double dimensions because of the twofold nature of complex numbers
@@ -123,7 +127,7 @@ embeddings_k2 = np.array([i[0] for i in embedding_map2.values()])
 # Check if second dimension is 3
 print (embeddings_3d_pca.shape)
 print (embeddings_k2.shape)
-assert (embeddings_3d_pca.shape[1] == embeddings_k2.shape and embeddings_k2.shape == 3)
+assert (embeddings_3d_pca.shape[1] == embeddings_k2.shape[1] and embeddings_k2.shape[1] == 3)
 
 print ("pandas")
 table = pd.DataFrame(data={'name':list(s.replace("Synset('", '').replace("')", "")
@@ -150,10 +154,14 @@ std_args = {
     'leaf_size':20,
     'memory': Memory(cachedir=None),
     'metric':'euclidean',
-    'min_cluster_size':13,
     'min_samples':None,
     'p':None
 }
+number_of_points = embeddings_3d_pca.shape[0]
+std_args['min_cluster_size'] = int (number_of_points/(APPROX_CLUSTERS + APPROX_OUTLIERS_PER_CLUSTER))
+if std_args['min_cluster_size'] <= 0:
+    logging.warning("resetting std_args['min_cluster_size']! because its below 1")
+    std_args['min_cluster_size'] = 2
 
 def cluster(embeddings_array, **kwargs):
     print ('dimensionality', embeddings_array.shape)
@@ -177,7 +185,6 @@ things = ['pca', 'tsne', 'k2', 'kn']
 
 def make_path (X, D):
     tsp = TSP()
-
     # Using the data matrix
     tsp.read_data(X)
 
@@ -185,11 +192,13 @@ def make_path (X, D):
     tsp.read_mat(D)
 
     from tspy.solvers import TwoOpt_solver
-
-    TwoOpt_solver(initial_tour='NN', iter_num=100000)
-    best_tour = tsp.get_best_solution()
+    two_opt = TwoOpt_solver(initial_tour='NN', iter_num=100000)
+    two_opt_tour = tsp.get_approx_solution(two_opt)
 
     #tsp.plot_solution('TwoOpt_solver')
+
+    #
+    best_tour = tsp.get_best_solution()
     return best_tour
 
 
@@ -198,6 +207,9 @@ for kind in things:
     print ("writing table for %s " % kind)
     table['cl'] = table['cl_%s' % kind]
     cl_cols = table[['cl_%s' % k for k in things]]
+
+    # groupby makes splitting up the whole df pased on the column 'cl'
+    #
     cl_df = table.groupby(by='cl').mean().reset_index()
 
     # Initialize fitness function object using coords_list
@@ -208,8 +220,11 @@ for kind in things:
         sub_kind = kind
 
     subset = cl_df[[c + "_" + sub_kind for c in ['x', 'y', 'z']]]
-    print (subset[:10])
 
+    # If has not multiple points, it hangs
+    if not (len(subset)>2):
+        print (table)
+        raise ValueError(f"Between less than two points can't be a path! You expected clusters of mininmally {std_args['min_cluster_size']} points per cluster")
     points = [list(x) for x in subset.to_numpy()]
     print (points[:10])
     print (len(points))
