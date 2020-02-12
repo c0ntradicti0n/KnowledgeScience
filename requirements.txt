@@ -1,9 +1,10 @@
+ampligraph
 allennlp
 nltk
 wn
 addict
-ampligraph
-tensorflow
 ordered_set
 seaborn
 more_itertools
+tensorflow>=1.13.1,<2.0
+tspy
